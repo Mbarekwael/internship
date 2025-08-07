@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: beta-db
+  namespace: beta
+  labels:
+    beta: pipeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: beta-pipeline
+  selector:
+    matchLabels:
+      beta: pipeline
