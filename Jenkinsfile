@@ -4,8 +4,6 @@ podTemplate(
       name: 'podman',
       image: 'vniks/podman-agent:v1',
       command: 'cat',
-      privileged: true,
-      user: 'root',
       ttyEnabled: true
     ),
     containerTemplate(
