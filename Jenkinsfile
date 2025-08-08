@@ -20,6 +20,29 @@ pipeline {
             }
         }
 
+        stage('Install Podman') {
+            steps {
+                script {
+                    sh '''
+                    echo "[INFO] Updating package list and installing podman"
+                    if command -v apt-get &> /dev/null; then
+                        sudo apt-get update
+                        sudo apt-get install -y podman
+                    elif command -v dnf &> /dev/null; then
+                        sudo dnf install -y podman
+                    elif command -v yum &> /dev/null; then
+                        sudo yum install -y podman
+                    else
+                        echo "[ERROR] No supported package manager found"
+                        exit 1
+                    fi
+
+                    podman --version || { echo "[ERROR] Podman install failed"; exit 1; }
+                    '''
+                }
+            }
+        }
+
         stage('Build Backend Image') {
             steps {
                 script {
