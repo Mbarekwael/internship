@@ -43,7 +43,7 @@ pipeline {
                     cd $PODMAN_HOME/bin
 
                     curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-remote-static-linux_amd64.tar.gz
-                    tar -xvzf podman-remote-static.tar.gz
+                    tar -xvzf podman-remote-static-linux_amd64.tar.gz
                     rm podman-remote-static.tar.gz
 
                     echo "[INFO] Podman installed to $PODMAN_HOME"
