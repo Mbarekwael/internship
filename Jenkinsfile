@@ -1,110 +1,132 @@
-podTemplate(
-    containers: [
-        containerTemplate(
-            name: 'podman',
-            image: 'quay.io/waelmbarek/podman-agent:v1',
-            command: 'cat',
-            ttyEnabled: true,
-            privileged: true
-        )
-    ],
-    volumes: [
-        hostPathVolume(
-            mountPath: '/run/podman/podman.sock',
-            hostPath: '/run/podman/podman.sock'
-        )
-    ]
-) {
-    node(POD_LABEL) {
+pipeline {
+    agent any
 
-        def registry = "quay.io"
-        def imageFrontend = "quay.io/waelmbarek/jobportal-frontend:latest"
-        def imageBackend = "quay.io/waelmbarek/jobportal-backend:latest"
-        def imageMongo = "quay.io/waelmbarek/mongodb"
-        def gitCredentials = "github-credentials"
-        def registryCredentials = "quay-credentials"
-        def namespace = "beta"
+    environment {
+        REGISTRY = "quay.io"
+        IMAGE_FRONTEND = "quay.io/waelmbarek/jobportal-frontend:latest"
+        IMAGE_BACKEND = "quay.io/waelmbarek/jobportal-backend:latest"
+        IMAGE_MONGO = "quay.io/waelmbarek/mongodb"
+        GIT_CREDENTIALS = "github-credentials"
+        REGISTRY_CREDENTIALS = "quay-credentials"
+        NAMESPACE = "beta"
+        PODMAN_HOME = "${HOME}/.local/podman"
+        PATH = "${HOME}/.local/podman/bin:$PATH"
+    }
 
+    stages {
         stage('Clone Repository') {
-            git branch: 'main',
-                credentialsId: gitCredentials,
-                url: 'https://github.com/Mbarekwael/internship.git'
+            steps {
+                git branch: 'main',
+                    credentialsId: "${GIT_CREDENTIALS}",
+                    url: 'https://github.com/Mbarekwael/internship.git'
+            }
+        }
+
+        stage('Install Full Podman (Not podman-remote)') {
+            steps {
+                sh '''
+                set -e
+                echo "[INFO] Installing real Podman binary"
+
+                PODMAN_HOME=$HOME/.local/podman
+                mkdir -p $PODMAN_HOME/bin
+                cd $PODMAN_HOME/bin
+
+                if [ ! -f podman ]; then
+                    curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-4.9.0.tar.gz
+                    tar -xzf podman-4.9.0.tar.gz
+                    chmod +x podman
+                    rm podman-4.9.0.tar.gz
+                fi
+
+                export PATH=$PODMAN_HOME/bin:$PATH
+                ./podman --version
+                '''
+            }
         }
 
         stage('Build Backend Image') {
-            container('podman') {
+            steps {
                 dir('backend') {
-                    sh "podman build -t ${imageBackend} ."
+                    sh '$HOME/.local/podman/bin/podman build -t ${IMAGE_BACKEND} .'
                 }
             }
         }
 
         stage('Build Frontend Image') {
-            container('podman') {
+            steps {
                 dir('frontend') {
-                    sh "podman build -t ${imageFrontend} ."
+                    sh '$HOME/.local/podman/bin/podman build -t ${IMAGE_FRONTEND} .'
                 }
             }
         }
 
         stage('Push Images to Quay.io') {
-            container('podman') {
-                withCredentials([usernamePassword(credentialsId: registryCredentials, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh '''
-                    podman login -u $REG_USER -p $REG_PASS quay.io
-                    podman push quay.io/waelmbarek/jobportal-backend:latest
-                    podman push quay.io/waelmbarek/jobportal-frontend:latest
+                    $HOME/.local/podman/bin/podman login -u $REG_USER -p $REG_PASS ${REGISTRY}
+                    $HOME/.local/podman/bin/podman push ${IMAGE_BACKEND}
+                    $HOME/.local/podman/bin/podman push ${IMAGE_FRONTEND}
                     '''
                 }
             }
         }
 
         stage('Deploy PVC for MongoDB') {
-            sh '''
-            oc project ${namespace} || oc new-project ${namespace}
-            oc apply -f k8s/pvc.yml || echo "PVC already exists"
-            '''
+            steps {
+                sh '''
+                oc project ${NAMESPACE} || oc new-project ${NAMESPACE}
+                oc apply -f k8s/pvc.yml || echo "PVC already exists"
+                '''
+            }
         }
 
         stage('Deploy MongoDB') {
-            sh '''
-            oc delete all -l app=mongodb -n ${namespace} || true
-            oc new-app --name=mongodb \
-            quay.io/waelmbarek/mongodb \
-            -e MONGO_INITDB_ROOT_USERNAME=admin \
-            -e MONGO_INITDB_ROOT_PASSWORD=admin123 \
-            --volume=beta-db:/data/db \
-            -n ${namespace} || echo "MongoDB deployment skipped"
-            '''
+            steps {
+                sh '''
+                oc delete all -l app=mongodb -n ${NAMESPACE} || true
+                oc new-app --name=mongodb \
+                ${IMAGE_MONGO} \
+                -e MONGO_INITDB_ROOT_USERNAME=admin \
+                -e MONGO_INITDB_ROOT_PASSWORD=admin123 \
+                --volume=beta-db:/data/db \
+                -n ${NAMESPACE} || echo "MongoDB deployment skipped"
+                '''
+            }
         }
 
         stage('Deploy Backend') {
-            sh """
-            oc delete all -l app=jobportal-backend -n ${namespace} || true
-            oc new-app --name=jobportal-backend \
-            ${imageBackend} \
-            -e MONGO_URL=mongodb://admin:admin123@mongodb:27017/jobportal \
-            -n ${namespace}
-            """
+            steps {
+                sh '''
+                oc delete all -l app=jobportal-backend -n ${NAMESPACE} || true
+                oc new-app --name=jobportal-backend \
+                ${IMAGE_BACKEND} \
+                -e MONGO_URL=mongodb://admin:admin123@mongodb:27017/jobportal \
+                -n ${NAMESPACE}
+                '''
+            }
         }
 
         stage('Deploy Frontend') {
-            sh """
-            oc delete all -l app=jobportal-frontend -n ${namespace} || true
-            oc new-app --name=jobportal-frontend ${imageFrontend} -n ${namespace}
-            """
+            steps {
+                sh '''
+                oc delete all -l app=jobportal-frontend -n ${NAMESPACE} || true
+                oc new-app --name=jobportal-frontend ${IMAGE_FRONTEND} -n ${NAMESPACE}
+                '''
+            }
         }
+    }
 
-        post {
-            success {
-                echo 'CI/CD pipeline executed successfully!'
-            }
-            failure {
-                echo 'Pipeline failed!'
-            }
-            always {
-                echo 'Pipeline finished.'
-            }
+    post {
+        success {
+            echo 'CI/CD pipeline executed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+        always {
+            echo 'Pipeline finished.'
         }
     }
 }
