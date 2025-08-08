@@ -42,7 +42,7 @@ pipeline {
                     mkdir -p $PODMAN_HOME/bin
                     cd $PODMAN_HOME/bin
 
-                    curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-remote-static.tar.gz
+                    curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-remote-static-linux_amd64.tar.gz
                     tar -xvzf podman-remote-static.tar.gz
                     rm podman-remote-static.tar.gz
 
