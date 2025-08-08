@@ -22,33 +22,54 @@ pipeline {
             }
         }
 
-        stage('Install Full Podman (Not podman-remote)') {
+        stage('Install Podman (Rootless Persistent)') {
             steps {
-                sh '''
-                set -e
-                echo "[INFO] Installing real Podman binary"
+                script {
+                    sh '''
+                    set -e
 
-                PODMAN_HOME=$HOME/.local/podman
-                mkdir -p $PODMAN_HOME/bin
-                cd $PODMAN_HOME/bin
+                    echo "[INFO] Setting up persistent Podman rootless install"
 
-                if [ ! -f podman ]; then
-                    curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-4.9.0.tar.gz
-                    tar -xzf podman-4.9.0.tar.gz
+                    export PODMAN_HOME=$HOME/.local/podman
+                    export PATH=$PODMAN_HOME/bin:$PATH
+
+                    if [ -x "$PODMAN_HOME/bin/podman" ]; then
+                      echo "[INFO] Podman already installed at $PODMAN_HOME"
+                      $PODMAN_HOME/bin/podman --version
+                      exit 0
+                    fi
+
+                    mkdir -p $PODMAN_HOME/bin
+                    cd $PODMAN_HOME/bin
+
+                    curl -LO https://github.com/containers/podman/releases/download/v4.9.0/podman-remote-static-linux_amd64.tar.gz
+                    tar -xvzf podman-remote-static-linux_amd64.tar.gz
+                    mv bin/podman-remote-static-linux_amd64 podman
                     chmod +x podman
-                    rm podman-4.9.0.tar.gz
-                fi
+                    rm -rf bin podman-remote-static-linux_amd64.tar.gz
 
-                export PATH=$PODMAN_HOME/bin:$PATH
-                ./podman --version
-                '''
+                    echo "[INFO] Podman installed to $PODMAN_HOME"
+                    ./podman --version
+                    '''
+                }
             }
         }
 
         stage('Build Backend Image') {
             steps {
                 dir('backend') {
-                    sh '$HOME/.local/podman/bin/podman build -t ${IMAGE_BACKEND} .'
+                    sh '''
+                    export PATH=$HOME/.local/podman/bin:$PATH
+                    mkdir -p $HOME/.config/containers
+                    cat <<EOF > $HOME/.config/containers/containers.conf
+[engine]
+runtime="crun"
+cgroup_manager="cgroupfs"
+events_logger="file"
+EOF
+                    export CONTAINERS_CONF=$HOME/.config/containers/containers.conf
+                    podman --remote=false build -t ${IMAGE_BACKEND} .
+                    '''
                 }
             }
         }
@@ -56,7 +77,11 @@ pipeline {
         stage('Build Frontend Image') {
             steps {
                 dir('frontend') {
-                    sh '$HOME/.local/podman/bin/podman build -t ${IMAGE_FRONTEND} .'
+                    sh '''
+                    export PATH=$HOME/.local/podman/bin:$PATH
+                    export CONTAINERS_CONF=$HOME/.config/containers/containers.conf
+                    podman --remote=false build -t ${IMAGE_FRONTEND} .
+                    '''
                 }
             }
         }
@@ -65,9 +90,10 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh '''
-                    $HOME/.local/podman/bin/podman login -u $REG_USER -p $REG_PASS ${REGISTRY}
-                    $HOME/.local/podman/bin/podman push ${IMAGE_BACKEND}
-                    $HOME/.local/podman/bin/podman push ${IMAGE_FRONTEND}
+                    export PATH=$HOME/.local/podman/bin:$PATH
+                    podman --remote=false login -u $REG_USER -p $REG_PASS ${REGISTRY}
+                    podman --remote=false push ${IMAGE_BACKEND}
+                    podman --remote=false push ${IMAGE_FRONTEND}
                     '''
                 }
             }
