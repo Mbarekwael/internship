@@ -1,104 +1,115 @@
-podTemplate(
-    containers: [
-        containerTemplate(
-            name: 'jnlp',
-            image: 'jenkins/inbound-agent:latest',
-            args: '${computer.jnlpmac} ${computer.name}',
-            ttyEnabled: true
-        ),
-        containerTemplate(
-            name: 'podman',
-            image: 'quay.io/waelmbarek/podman-agent:v1',
-            command: 'cat',
-            ttyEnabled: true,
-            privileged: true
-        ),
-        containerTemplate(
-            name: 'oc-cli',
-            image: 'quay.io/openshift/origin-cli:latest',
-            command: 'cat',
-            ttyEnabled: true
-        )
-    ],
-    volumes: [
-        hostPathVolume(
-            mountPath: '/run/podman/podman.sock',
-            hostPath: '/run/podman/podman.sock'
-        )
-    ],
-    idleMinutes: 5,
-    serviceAccount: 'jenkins', // Ensure your SA has needed permissions
-    workspaceVolume: emptyDirWorkspaceVolume(memory: false)
-) {
-    node(POD_LABEL) {
-        def registry = "quay.io"
-        def imageFrontend = "quay.io/waelmbarek/jobportal-frontend:latest"
-        def imageBackend = "quay.io/waelmbarek/jobportal-backend:latest"
-        def gitCredentials = "github-credentials"
-        def registryCredentials = "quay-credentials"
-        def namespace = "beta"
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: buildah
+      image: quay.io/buildah/stable:v1.35.4
+      command:
+        - cat
+      tty: true
+"""
+        }
+    }
 
-        stage('Clone Repository') {
-            git branch: 'main',
-                credentialsId: gitCredentials,
-                url: 'https://github.com/Mbarekwael/internship.git'
+    environment {
+        PROJECT_NAME = "beta"
+        OPENSHIFT_SERVER = "https://api.ocp.smartek.ae:6443"
+        REGISTRY_CREDENTIALS = 'quay-credentials'  // <-- your Quay creds ID
+        FRONTEND_IMAGE = "quay.io/waelmbarek/jobportal-frontend:latest"
+        BACKEND_IMAGE = "quay.io/waelmbarek/jobportal-backend:latest"
+    }
+
+    stages {
+        stage('Clone Repo') {
+            steps {
+                checkout scm
+            }
         }
 
-        stage('Build Backend Image') {
-            container('podman') {
-                dir('backend') {
-                    sh "podman build -t ${imageBackend} ."
+        stage('Build & Push to Quay') {
+            parallel {
+                stage('Frontend') {
+                    steps {
+                        container('buildah') {
+                            withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", passwordVariable: 'QUAY_PASS', usernameVariable: 'QUAY_USER')]) {
+                                sh '''
+                                    echo "Logging into Quay..."
+                                    buildah login -u "$QUAY_USER" -p "$QUAY_PASS" quay.io
+
+                                    echo "Building frontend image (rootless)..."
+                                    cd frontend
+                                    buildah bud --storage-driver=vfs -t ${FRONTEND_IMAGE} .
+
+                                    echo "Pushing frontend image (rootless)..."
+                                    buildah push --storage-driver=vfs ${FRONTEND_IMAGE}
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('Backend') {
+                    steps {
+                        container('buildah') {
+                            withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", passwordVariable: 'QUAY_PASS', usernameVariable: 'QUAY_USER')]) {
+                                sh '''
+                                    echo "Logging into Quay..."
+                                    buildah login -u "$QUAY_USER" -p "$QUAY_PASS" quay.io
+
+                                    echo "Building backend image (rootless)..."
+                                    cd backend
+                                    buildah bud --storage-driver=vfs -t ${BACKEND_IMAGE} .
+
+                                    echo "Pushing backend image (rootless)..."
+                                    buildah push --storage-driver=vfs ${BACKEND_IMAGE}
+                                '''
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        stage('Build Frontend Image') {
-            container('podman') {
-                dir('frontend') {
-                    sh "podman build -t ${imageFrontend} ."
+        stage('Deploy from Quay') {
+            steps {
+                container('buildah') {
+                    withCredentials([string(credentialsId: 'oc-token-id', variable: 'OC_TOKEN')]) {
+                        sh '''
+                            echo "Deploying from Quay..."
+                            oc login --token=$OC_TOKEN --server=${OPENSHIFT_SERVER} --insecure-skip-tls-verify
+                            oc project ${PROJECT_NAME}
+
+                            oc delete all -l app=jobportal-frontend --ignore-not-found=true
+                            oc delete all -l app=jobportal-backend --ignore-not-found=true
+
+                            sleep 10
+
+                            oc new-app ${FRONTEND_IMAGE} --name=jobportal-frontend
+                            oc expose svc/jobportal-frontend
+
+                            oc new-app ${BACKEND_IMAGE} --name=jobportal-backend
+                            oc expose svc/jobportal-backend
+
+                            oc get pods
+                            oc get svc
+                            oc get routes
+                        '''
+                    }
                 }
             }
         }
+    }
 
-        stage('Push Images to Quay.io') {
-            container('podman') {
-                withCredentials([usernamePassword(credentialsId: registryCredentials, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    sh '''
-                    podman login -u $REG_USER -p $REG_PASS quay.io
-                    podman push quay.io/waelmbarek/jobportal-backend:latest
-                    podman push quay.io/waelmbarek/jobportal-frontend:latest
-                    '''
-                }
-            }
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
         }
-
-        stage('Deploy to OpenShift') {
-            container('oc-cli') {
-                sh """
-                oc project ${namespace} || oc new-project ${namespace}
-                oc apply -f k8s/pvc.yml || echo "PVC already exists"
-                oc delete all -l app=mongodb -n ${namespace} || true
-                oc new-app --name=mongodb \
-                    quay.io/waelmbarek/mongodb \
-                    -e MONGO_INITDB_ROOT_USERNAME=admin \
-                    -e MONGO_INITDB_ROOT_PASSWORD=admin123 \
-                    --volume=beta-db:/data/db \
-                    -n ${namespace} || echo "MongoDB deployment skipped"
-                oc delete all -l app=jobportal-backend -n ${namespace} || true
-                oc new-app --name=jobportal-backend \
-                    ${imageBackend} \
-                    -e MONGO_URL=mongodb://admin:admin123@mongodb:27017/jobportal \
-                    -n ${namespace}
-                oc delete all -l app=jobportal-frontend -n ${namespace} || true
-                oc new-app --name=jobportal-frontend ${imageFrontend} -n ${namespace}
-                """
-            }
-        }
-
-        post {
-            success { echo 'CI/CD pipeline executed successfully!' }
-            failure { echo 'Pipeline failed!' }
-            always { echo 'Pipeline finished.' }
+        failure {
+            echo 'Pipeline failed. Check the logs for details.'
         }
     }
 }
