@@ -7,7 +7,7 @@ kind: Pod
 spec:
   containers:
   - name: jnlp
-    image: quay.io/jenkins/inbound-agent:latest
+    image: quay.io/sisense/jenkins/inbound-agent:3327.v868139a_d00e0-2
   - name: buildah
     image: quay.io/buildah/stable:v1.35.4
     command: ["cat"]
