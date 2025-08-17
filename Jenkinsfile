@@ -24,7 +24,7 @@ spec:
       - name: BUILDAH_ISOLATION
         value: chroot
       - name: BUILDAH_USERNS
-        value: host          # <-- key change: avoid userns mapping
+        value: host
       - name: XDG_RUNTIME_DIR
         value: /tmp/run
     volumeMounts:
@@ -52,7 +52,7 @@ spec:
   }
 
   environment {
-    PROJECT_NAME     = "jenkins"
+    PROJECT_NAME     = "beta"
     OPENSHIFT_SERVER = "https://api.ocp4.smartek.ae:6443"
     FRONTEND_IMAGE   = "quay.io/waelmbarek/jobportal-frontend:latest"
     BACKEND_IMAGE    = "quay.io/waelmbarek/jobportal-backend:latest"
@@ -112,7 +112,7 @@ spec:
       }
     }
 
-    stage('Build & Push Images (Buildah)') {
+    stage('Build & Push Images (Buildah )') {
       parallel {
         stage('Frontend Image') {
           steps {
@@ -122,14 +122,15 @@ spec:
                                                passwordVariable: 'QUAY_PASS')]) {
                 sh '''
                   set -eux
-                  # Build without userns mapping
+                  # Build (no userns mapping)
                   buildah bud --userns=host --isolation=chroot --storage-driver=vfs \
                     -t ${FRONTEND_IMAGE} -f frontend/Dockerfile frontend
 
-                  # Push with inline creds (no login step)
-                  buildah push --storage-driver=vfs \
-                    --creds "$QUAY_USER:$QUAY_PASS" \
-                    ${FRONTEND_IMAGE} docker://${FRONTEND_IMAGE}
+                  # Push via skopeo (no login; pass creds inline)
+                  skopeo copy \
+                    --dest-creds "$QUAY_USER:$QUAY_PASS" \
+                    "containers-storage:${FRONTEND_IMAGE}" \
+                    "docker://${FRONTEND_IMAGE}"
                 '''
               }
             }
@@ -147,9 +148,10 @@ spec:
                   buildah bud --userns=host --isolation=chroot --storage-driver=vfs \
                     -t ${BACKEND_IMAGE} -f backend/Dockerfile backend
 
-                  buildah push --storage-driver=vfs \
-                    --creds "$QUAY_USER:$QUAY_PASS" \
-                    ${BACKEND_IMAGE} docker://${BACKEND_IMAGE}
+                  skopeo copy \
+                    --dest-creds "$QUAY_USER:$QUAY_PASS" \
+                    "containers-storage:${BACKEND_IMAGE}" \
+                    "docker://${BACKEND_IMAGE}"
                 '''
               }
             }
