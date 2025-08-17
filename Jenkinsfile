@@ -52,7 +52,7 @@ spec:
   }
 
   environment {
-    PROJECT_NAME     = "beta"
+    PROJECT_NAME     = "jenkins "
     OPENSHIFT_SERVER = "https://api.ocp4.smartek.ae:6443"
     FRONTEND_IMAGE   = "quay.io/waelmbarek/jobportal-frontend:latest"
     BACKEND_IMAGE    = "quay.io/waelmbarek/jobportal-backend:latest"
