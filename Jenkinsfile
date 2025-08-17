@@ -35,7 +35,7 @@ spec:
 
   environment {
     PROJECT_NAME = "beta"
-    OPENSHIFT_SERVER = "https://api.ocp.smartek.ae:6443"
+    OPENSHIFT_SERVER = "https://api.ocp4.smartek.ae"
     REGISTRY_CREDENTIALS = 'quay-credentials'
     FRONTEND_IMAGE = "quay.io/waelmbarek/jobportal-frontend:latest"
     BACKEND_IMAGE  = "quay.io/waelmbarek/jobportal-backend:latest"
