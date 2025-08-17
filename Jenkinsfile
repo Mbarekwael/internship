@@ -10,7 +10,7 @@ metadata:
 spec:
   containers:
   - name: nodejs
-    image: node:20-alpine            # <-- use Node 20 to satisfy engines
+    image: node:20-alpine
     command: ["cat"]
     tty: true
 
@@ -27,8 +27,6 @@ spec:
         value: keep-id
       - name: XDG_RUNTIME_DIR
         value: /tmp/run
-      - name: REGISTRY_AUTH_FILE
-        value: /home/jenkins/agent/.auth/containers-auth.json
     volumeMounts:
       - name: containers
         mountPath: /var/lib/containers
@@ -61,7 +59,9 @@ spec:
   }
 
   stages {
-    stage('Checkout (SCM)') { steps { checkout scm } }
+    stage('Checkout (SCM)') {
+      steps { checkout scm }
+    }
 
     stage('Install & Build') {
       parallel {
@@ -73,7 +73,7 @@ spec:
                   set -eux
                   npm ci
 
-                  # Try lint, but don't fail the pipeline right now
+                  # Lint only if present; non-blocking
                   if npm run | grep -q "^  lint$"; then
                     echo "Running frontend lint (non-blocking)..."
                     npm run lint || echo "[WARN] Frontend lint failed, continuing..."
@@ -81,7 +81,7 @@ spec:
                     echo "[INFO] No 'lint' script in frontend/package.json, skipping."
                   fi
 
-                  # Build regardless of lint
+                  # Build only if present
                   if npm run | grep -q "^  build$"; then
                     npm run build
                   else
@@ -101,7 +101,7 @@ spec:
                   set -eux
                   npm ci
 
-                  # Backend has no 'lint' script; make it conditional
+                  # Lint only if present; non-blocking
                   if npm run | grep -q "^  lint$"; then
                     echo "Running backend lint (non-blocking)..."
                     npm run lint || echo "[WARN] Backend lint failed, continuing..."
@@ -109,7 +109,7 @@ spec:
                     echo "[INFO] No 'lint' script in backend/package.json, skipping."
                   fi
 
-                  # Optional build step if you have one
+                  # Build only if present
                   if npm run | grep -q "^  build$"; then
                     npm run build
                   else
@@ -128,16 +128,18 @@ spec:
         stage('Frontend Image') {
           steps {
             container('buildah') {
-              withCredentials([usernamePassword(credentialsId: 'quay-credentials', usernameVariable: 'QUAY_USER', passwordVariable: 'QUAY_PASS')]) {
+              withCredentials([usernamePassword(credentialsId: 'quay-credentials',
+                                               usernameVariable: 'QUAY_USER',
+                                               passwordVariable: 'QUAY_PASS')]) {
                 sh '''
                   set -eux
-                  mkdir -p "$(dirname "$REGISTRY_AUTH_FILE")"
-                  buildah login --authfile "$REGISTRY_AUTH_FILE" -u "$QUAY_USER" -p "$QUAY_PASS" quay.io
-
+                  # Build (rootless-friendly)
                   buildah bud --userns=keep-id --storage-driver=vfs \
                     -t ${FRONTEND_IMAGE} -f frontend/Dockerfile frontend
 
-                  buildah push --authfile "$REGISTRY_AUTH_FILE" --storage-driver=vfs \
+                  # Push with inline creds (no login => avoids uid_map writes)
+                  buildah push --storage-driver=vfs \
+                    --creds "$QUAY_USER:$QUAY_PASS" \
                     ${FRONTEND_IMAGE} docker://${FRONTEND_IMAGE}
                 '''
               }
@@ -148,16 +150,18 @@ spec:
         stage('Backend Image') {
           steps {
             container('buildah') {
-              withCredentials([usernamePassword(credentialsId: 'quay-credentials', usernameVariable: 'QUAY_USER', passwordVariable: 'QUAY_PASS')]) {
+              withCredentials([usernamePassword(credentialsId: 'quay-credentials',
+                                               usernameVariable: 'QUAY_USER',
+                                               passwordVariable: 'QUAY_PASS')]) {
                 sh '''
                   set -eux
-                  mkdir -p "$(dirname "$REGISTRY_AUTH_FILE")"
-                  buildah login --authfile "$REGISTRY_AUTH_FILE" -u "$QUAY_USER" -p "$QUAY_PASS" quay.io
-
+                  # Build (rootless-friendly)
                   buildah bud --userns=keep-id --storage-driver=vfs \
                     -t ${BACKEND_IMAGE} -f backend/Dockerfile backend
 
-                  buildah push --authfile "$REGISTRY_AUTH_FILE" --storage-driver=vfs \
+                  # Push with inline creds (no login => avoids uid_map writes)
+                  buildah push --storage-driver=vfs \
+                    --creds "$QUAY_USER:$QUAY_PASS" \
                     ${BACKEND_IMAGE} docker://${BACKEND_IMAGE}
                 '''
               }
