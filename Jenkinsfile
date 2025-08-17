@@ -24,7 +24,7 @@ spec:
       - name: BUILDAH_ISOLATION
         value: chroot
       - name: BUILDAH_USERNS
-        value: keep-id
+        value: host          # <-- key change: avoid userns mapping
       - name: XDG_RUNTIME_DIR
         value: /tmp/run
     volumeMounts:
@@ -52,7 +52,7 @@ spec:
   }
 
   environment {
-    PROJECT_NAME     = "jenkins "
+    PROJECT_NAME     = "beta"
     OPENSHIFT_SERVER = "https://api.ocp4.smartek.ae:6443"
     FRONTEND_IMAGE   = "quay.io/waelmbarek/jobportal-frontend:latest"
     BACKEND_IMAGE    = "quay.io/waelmbarek/jobportal-backend:latest"
@@ -72,16 +72,11 @@ spec:
                 sh '''
                   set -eux
                   npm ci
-
-                  # Lint only if present; non-blocking
                   if npm run | grep -q "^  lint$"; then
-                    echo "Running frontend lint (non-blocking)..."
                     npm run lint || echo "[WARN] Frontend lint failed, continuing..."
                   else
                     echo "[INFO] No 'lint' script in frontend/package.json, skipping."
                   fi
-
-                  # Build only if present
                   if npm run | grep -q "^  build$"; then
                     npm run build
                   else
@@ -92,7 +87,6 @@ spec:
             }
           }
         }
-
         stage('Backend') {
           steps {
             container('nodejs') {
@@ -100,16 +94,11 @@ spec:
                 sh '''
                   set -eux
                   npm ci
-
-                  # Lint only if present; non-blocking
                   if npm run | grep -q "^  lint$"; then
-                    echo "Running backend lint (non-blocking)..."
                     npm run lint || echo "[WARN] Backend lint failed, continuing..."
                   else
                     echo "[INFO] No 'lint' script in backend/package.json, skipping."
                   fi
-
-                  # Build only if present
                   if npm run | grep -q "^  build$"; then
                     npm run build
                   else
@@ -133,11 +122,11 @@ spec:
                                                passwordVariable: 'QUAY_PASS')]) {
                 sh '''
                   set -eux
-                  # Build (rootless-friendly)
-                  buildah bud --userns=keep-id --storage-driver=vfs \
+                  # Build without userns mapping
+                  buildah bud --userns=host --isolation=chroot --storage-driver=vfs \
                     -t ${FRONTEND_IMAGE} -f frontend/Dockerfile frontend
 
-                  # Push with inline creds (no login => avoids uid_map writes)
+                  # Push with inline creds (no login step)
                   buildah push --storage-driver=vfs \
                     --creds "$QUAY_USER:$QUAY_PASS" \
                     ${FRONTEND_IMAGE} docker://${FRONTEND_IMAGE}
@@ -155,11 +144,9 @@ spec:
                                                passwordVariable: 'QUAY_PASS')]) {
                 sh '''
                   set -eux
-                  # Build (rootless-friendly)
-                  buildah bud --userns=keep-id --storage-driver=vfs \
+                  buildah bud --userns=host --isolation=chroot --storage-driver=vfs \
                     -t ${BACKEND_IMAGE} -f backend/Dockerfile backend
 
-                  # Push with inline creds (no login => avoids uid_map writes)
                   buildah push --storage-driver=vfs \
                     --creds "$QUAY_USER:$QUAY_PASS" \
                     ${BACKEND_IMAGE} docker://${BACKEND_IMAGE}
@@ -186,11 +173,11 @@ spec:
                 oc delete all -l app=jobportal-frontend --ignore-not-found
                 oc delete all -l app=jobportal-backend --ignore-not-found
 
-                oc new-app ${FRONTEND_IMAGE} --name=jobportal-frontend
-                oc expose svc/jobportal-frontend
+                oc new-app ${FRONTEND_IMAGE} --name=jobportal-frontend || true
+                oc expose svc/jobportal-frontend || true
 
-                oc new-app ${BACKEND_IMAGE} --name=jobportal-backend
-                oc expose svc/jobportal-backend
+                oc new-app ${BACKEND_IMAGE} --name=jobportal-backend || true
+                oc expose svc/jobportal-backend || true
               fi
 
               oc get pods
