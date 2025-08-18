@@ -1,18 +1,19 @@
-# --- Stage 1: Build frontend with Node.js ---
-FROM node:18 AS builder
+FROM docker.io/library/node:18 AS builder
 WORKDIR /app
 
 # Install dependencies
 COPY package*.json ./
 RUN npm install
 
-# Copy the rest and build
+# Copy source and build
 COPY . .
 RUN npm run build
 
 
-# --- Stage 2: Serve with Nginx as non-root user ---
-FROM nginx:alpine
+# ================================
+# Stage 2: Serve with Nginx (OpenShift friendly)
+# ================================
+FROM docker.io/library/nginx:alpine
 
 # Clean default nginx html content
 RUN rm -rf /usr/share/nginx/html/*
@@ -20,29 +21,19 @@ RUN rm -rf /usr/share/nginx/html/*
 # Copy built app from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Use your own nginx.conf file (not default.conf)
+# Copy custom nginx config if you have one
 COPY nginx.conf /etc/nginx/nginx.conf
 
-
-# Create non-root user for OpenShift compatibility
-RUN addgroup -S nginxuser && adduser -S nginxuser -G nginxuser
-
-# OpenShift file permission requirements
-RUN chmod -R 777 /var/cache/nginx \
- && chown -R nginxuser:nginxuser /var/cache/nginx \
- && chown -R nginxuser:nginxuser /var/log/nginx \
- && chown -R nginxuser:nginxuser /etc/nginx
-
-# Handle nginx.pid file permissions
-RUN touch /var/run/nginx.pid \
- && chown -R nginxuser:nginxuser /var/run/nginx.pid \
- && chmod 777 /var/run/nginx.pid
+# --- OpenShift compatibility ---
+# OpenShift assigns a random non-root UID.  
+# We ensure all required dirs are writable by group 0 (root group).  
+RUN chgrp -R 0 /var/cache/nginx /var/run /var/log/nginx /etc/nginx /usr/share/nginx/html \
+ && chmod -R g+rwX /var/cache/nginx /var/run /var/log/nginx /etc/nginx /usr/share/nginx/html \
+ && touch /var/run/nginx.pid \
+ && chgrp 0 /var/run/nginx.pid && chmod g+rw /var/run/nginx.pid
 
 # Expose app port
 EXPOSE 8080
 
-# Use non-root user
-USER nginxuser
-
-# Start Nginx
+# No USER set -> OpenShift will inject a random non-root UID automatically
 CMD ["nginx", "-g", "daemon off;"]
